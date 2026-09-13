@@ -99,7 +99,7 @@ void IFighterTask::OnUnitIdle(CCircuitUnit* unit)
 	}
 	unit->SetTaskFrame(manager->GetCircuit()->GetLastFrame());
 
-	if (!unit->GetTravelAct()->IsFinished()) {
+	if ((unit->GetTravelAct() != nullptr) && !unit->GetTravelAct()->IsFinished()) {
 		unit->GetTravelAct()->InvalidateLastSector();
 	}
 }
