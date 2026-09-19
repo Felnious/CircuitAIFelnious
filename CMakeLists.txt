@@ -32,7 +32,7 @@ if (APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
 	set(additionalSources  ${additionalSources} ${CMAKE_CURRENT_SOURCE_DIR}/src/lib/angelscript/source/as_callfunc_arm64_xcode.S)
 endif ()
 
-set(additionalLibraries    ${Cpp_AIWRAPPER_TARGET} CUtils)  # can't use Tracy::TracyClient in dll, requires -fPIC
+set(additionalLibraries    ${Cpp_AIWRAPPER_TARGET} CUtils ${ZLIB_LIBRARY})  # can't use Tracy::TracyClient in dll, requires -fPIC
 
 if (MSVC)
 	set(additionalCompileFlags "${additionalCompileFlags} -DLEMON_ONLY_TEMPLATES")
@@ -74,6 +74,8 @@ endif (CIRCUIT_AS_JIT)
 if    (BUILD_Cpp_AIWRAPPER)
 	include_directories(BEFORE
 		${Cpp_AIWRAPPER_INCLUDE_DIRS}
+		${ZLIB_INCLUDE_DIRS}
+		${ZLIB_INCLUDE_DIR}
 		${SDL2_INCLUDE_DIR}
 		${CMAKE_CURRENT_SOURCE_DIR}/src/lib/
 		${CMAKE_CURRENT_SOURCE_DIR}/src/lib/angelscript/include/

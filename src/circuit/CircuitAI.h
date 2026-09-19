@@ -93,6 +93,7 @@ public:
 	int HandleEvent(int topic, const void* data);
 	void NotifyGameEnd();
 	void NotifyResign();
+	void LogTelemetry();
 	void Resign(int newTeamId);
 	void MobileSlave(int newTeamId);
 private:
@@ -324,6 +325,8 @@ private:
 	int allyTeamId;
 	SideType sideId;
 	std::string sideName;
+	int telemetryUnitsBuilt = 0;
+	int telemetryUnitsLost = 0;
 	std::shared_ptr<IMainJob> mergeTask;
 
 	std::unique_ptr<COOAICallback>        callback;

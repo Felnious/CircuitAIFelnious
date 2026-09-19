@@ -153,7 +153,20 @@ int CCircuitAI::HandleEvent(int topic, const void* data)
 
 void CCircuitAI::NotifyGameEnd()
 {
+	LogTelemetry();
 	eventHandler = &CCircuitAI::HandleEndEvent;
+}
+
+void CCircuitAI::LogTelemetry()
+{
+	Resource* metal = callback->GetResourceByName(RES_NAME_METAL);
+	Resource* energy = callback->GetResourceByName(RES_NAME_ENERGY);
+	const float metalIncome = (economy != nullptr && metal != nullptr) ? economy->GetIncome(metal) : -1.f;
+	const float energyIncome = (economy != nullptr && energy != nullptr) ? economy->GetIncome(energy) : -1.f;
+	const int unitsAlive = static_cast<int>(teamUnits.size());
+
+	LOG("METRIC faction=%s metalIncome=%f energyIncome=%f unitsBuilt=%i unitsLost=%i unitsAlive=%i damageDealt=unavailable",
+		sideName.c_str(), metalIncome, energyIncome, telemetryUnitsBuilt, telemetryUnitsLost, unitsAlive);
 }
 
 void CCircuitAI::NotifyResign()
@@ -1077,6 +1090,7 @@ int CCircuitAI::UnitFinished(CCircuitUnit* unit)
 		return 0;
 	}
 	unit->SetIsFinished();  // TODO: Investigate rezz, plop and capture
+	++telemetryUnitsBuilt;
 
 	// NOTE: "response" structure and limits are per AI
 	if (isSlave
@@ -1186,6 +1200,9 @@ int CCircuitAI::UnitDamaged(CCircuitUnit* unit, ICoreUnit::Id attackerId, int we
 
 int CCircuitAI::UnitDestroyed(CCircuitUnit* unit, CEnemyInfo* attacker)
 {
+	if (unit->IsFinished()) {
+		++telemetryUnitsLost;
+	}
 	destroyed.insert(unit->GetId());
 	for (auto& module : modules) {
 		module->UnitDestroyed(unit, attacker);
