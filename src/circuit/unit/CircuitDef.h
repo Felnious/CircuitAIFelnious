@@ -84,6 +84,7 @@ public:
 	 * ANTI_STAT:  only static targets
 	 * NO_REPAIR:  do not repair marked unit. Doesn't work with Patrol command or Ally units
 	 * NO_DISRUPT: do not disrupt from assigned build-task
+	 * JUNO:       stockpile weapon targets enemy radar/jammer/scout instead of highest-cost group
 	 */
 	enum class AttrType: RoleT {NONE = -1,
 		MELEE = 0, BOOST, NO_JUMP, NO_STRAFE,
@@ -91,14 +92,14 @@ public:
 		SOLO, BASE, DG_COST, DG_STILL,
 		JUMP, ONOFF, VAMPIRE, RARE,
 		FENCE, REARM, NO_DGUN, ANTI_STAT,
-		NO_REPAIR, NO_DISRUPT, _SIZE_};
+		NO_REPAIR, NO_DISRUPT, JUNO, _SIZE_};
 	enum AttrMask: RoleM {
 		MELEE     = 0x00000001, BOOST      = 0x00000002, NO_JUMP  = 0x00000004, NO_STRAFE = 0x00000008,
 		STOCK     = 0x00000010, SIEGE      = 0x00000020, RET_HOLD = 0x00000040, RET_FIGHT = 0x00000080,
 		SOLO      = 0x00000100, BASE       = 0x00000200, DG_COST  = 0x00000400, DG_STILL  = 0x00000800,
 		JUMP      = 0x00001000, ONOFF      = 0x00002000, VAMPIRE  = 0x00004000, RARE      = 0x00008000,
 		FENCE     = 0x00010000, REARM      = 0x00020000, NO_DGUN  = 0x00040000, ANTI_STAT = 0x00080000,
-		NO_REPAIR = 0x00100000, NO_DISRUPT = 0x00200000};
+		NO_REPAIR = 0x00100000, NO_DISRUPT = 0x00200000, JUNO      = 0x00400000};
 	using AttrT = std::underlying_type<AttrType>::type;
 	using AttrM = std::underlying_type<AttrMask>::type;
 
@@ -189,6 +190,8 @@ public:
 	bool IsAttrAntiStat()  const { return attr & AttrMask::ANTI_STAT; }
 	bool IsAttrNoRepair()  const { return attr & AttrMask::NO_REPAIR; }  // also per-unit
 	bool IsAttrNoDisrupt() const { return attr & AttrMask::NO_REPAIR; }  // also per-unit
+	bool IsAttrJuno()      const { return attr & AttrMask::JUNO; }
+	bool IsAttrEmp()       const { return attr & AttrMask::EMP; }
 
 	bool IsHoldFire()   const { return fireState == FireType::HOLD; }
 	bool IsReturnFire() const { return fireState == FireType::RETURN; }
@@ -327,6 +330,8 @@ public:
 	bool IsPylon() const { return isPylon; }
 	void SetIsAssist(bool value) { isAssist = value; }
 	bool IsAssist() const { return isAssist; }
+	void SetIsJammer(bool value) { isJammer = value; }
+	bool IsJammer() const { return isJammer; }
 	void SetIsRadar(bool value) { isRadar = value; }
 	bool IsRadar() const { return isRadar; }
 	void SetIsSonar(bool value) { isSonar = value ; }
@@ -482,6 +487,7 @@ private:
 	bool isAssist : 1;
 	bool isRadar : 1;
 	bool isSonar : 1;
+	bool isJammer : 1;
 	bool isDecoy : 1;
 	bool isOnSlow : 1;
 	bool isOn : 1;

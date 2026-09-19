@@ -28,10 +28,11 @@
 
 	"superweapon": {
 		"unit": {
-			"armada": ["armmercury",  "armemp",  "armbrtha", "armvulc", "armamd", "armsilo"],
-			"cortex": ["corscreamer", "cortron", "corint",   "corbuzz", "corfmd", "corsilo"]
+			"armada": ["armmercury",  "armemp",  "armbrtha", "armvulc", "armamd", "armsilo", "armjuno"],
+			"cortex": ["corscreamer", "cortron", "corint",   "corbuzz", "corfmd", "corsilo", "corjuno"],
+			"legion": ["legperdition"]
 		},
-		"weight":     [ 0.25,          0.14,      0.25,       0.06,      0.15,     0.15],
+		"weight":     [ 0.25,          0.14,      0.25,       0.06,      0.15,     0.15,      0.10],
 
 		"condition": [30, 600]  // [<Minimum income>, <maximum seconds to build>]
 	},

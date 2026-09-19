@@ -14,6 +14,7 @@
 #include "CircuitAI.h"
 #include "util/Utils.h"
 
+#include "spring/SpringCallback.h"
 #include "spring/SpringMap.h"
 
 #include "AISCommands.h"
@@ -85,6 +86,40 @@ void CSuperTask::Update()
 	}
 
 	if (isTargetOverride) {
+		ExecuteAttack(unit);
+		return;
+	}
+
+	if (cdef->IsAttrJuno()) {
+		CEnemyInfo* bestTarget = FindJunoTarget(unit, cdef, frame);
+		if (bestTarget == nullptr) {
+			TRY_UNIT(circuit, unit,
+				unit->CmdStop();
+			)
+			SetTarget(nullptr);
+			targetFrame = frame;
+			return;
+		}
+		SetTarget(bestTarget);
+		targetPos = bestTarget->GetPos();
+		targetPos.y = circuit->GetMap()->GetElevationAt(targetPos.x, targetPos.z);
+		ExecuteAttack(unit);
+		return;
+	}
+
+	if (cdef->IsAttrEmp()) {
+		CEnemyInfo* bestTarget = FindEmpTarget(unit, cdef, frame);
+		if (bestTarget == nullptr) {
+			TRY_UNIT(circuit, unit,
+				unit->CmdStop();
+			)
+			SetTarget(nullptr);
+			targetFrame = frame;
+			return;
+		}
+		SetTarget(bestTarget);
+		targetPos = bestTarget->GetPos();
+		targetPos.y = circuit->GetMap()->GetElevationAt(targetPos.x, targetPos.z);
 		ExecuteAttack(unit);
 		return;
 	}
@@ -214,6 +249,69 @@ void CSuperTask::Update()
 
 		ExecuteAttack(unit);
 	}
+}
+
+CEnemyInfo* CSuperTask::FindJunoTarget(CCircuitUnit* unit, CCircuitDef* cdef, int frame)
+{
+	CCircuitAI* circuit = manager->GetCircuit();
+	const AIFloat3& pos = unit->GetPos(frame);
+	const float range = cdef->GetMaxRange();
+	auto& enemyIds = circuit->GetCallback()->GetEnemyUnitIdsIn(pos, range);
+
+	// Juno reveals stealth/jammed enemies, so prioritize sensor and scout targets over raw cost
+	CEnemyInfo* bestTarget = nullptr;
+	float maxScore = 0.f;
+	for (int eId : enemyIds) {
+		CEnemyInfo* enemy = circuit->GetEnemyInfo(eId);
+		if ((enemy == nullptr) || enemy->NotInRadarAndLOS()) {
+			continue;
+		}
+		CCircuitDef* edef = enemy->GetCircuitDef();
+		if (edef == nullptr) {
+			continue;
+		}
+		const bool isSensor = edef->IsRadar() || edef->IsJammer();
+		if (!isSensor && !edef->IsRoleScout()) {
+			continue;
+		}
+		const float score = (isSensor ? 2.f : 1.f) * (enemy->GetCost() + 1.f);
+		if (maxScore < score) {
+			maxScore = score;
+			bestTarget = enemy;
+		}
+	}
+	return bestTarget;
+}
+
+CEnemyInfo* CSuperTask::FindEmpTarget(CCircuitUnit* unit, CCircuitDef* cdef, int frame)
+{
+	CCircuitAI* circuit = manager->GetCircuit();
+	const AIFloat3& pos = unit->GetPos(frame);
+	const float range = cdef->GetMaxRange();
+	auto& enemyIds = circuit->GetCallback()->GetEnemyUnitIdsIn(pos, range);
+
+	// EMP paralyzes, so prefer static high-value targets (labs, defenses) over generic units
+	CEnemyInfo* bestTarget = nullptr;
+	float maxScore = 0.f;
+	for (int eId : enemyIds) {
+		CEnemyInfo* enemy = circuit->GetEnemyInfo(eId);
+		if ((enemy == nullptr) || enemy->NotInRadarAndLOS()) {
+			continue;
+		}
+		CCircuitDef* edef = enemy->GetCircuitDef();
+		if (edef == nullptr) {
+			continue;
+		}
+		const bool isLab = edef->GetDef()->IsBuilder() && edef->IsBuilder();
+		const bool isDefense = !isLab && !edef->IsMobile() && edef->IsAttacker();
+		const float tier = isLab ? 3.f : (isDefense ? 2.f : 1.f);
+		const float score = tier * (enemy->GetCost() + 1.f);
+		if (maxScore < score) {
+			maxScore = score;
+			bestTarget = enemy;
+		}
+	}
+	return bestTarget;
 }
 
 void CSuperTask::SetTargetPos(const AIFloat3& pos)

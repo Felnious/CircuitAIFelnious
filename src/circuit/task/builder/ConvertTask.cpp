@@ -39,7 +39,7 @@ void CBConvertTask::Update()
 	}
 
 	CEconomyManager* economyMgr = manager->GetCircuit()->GetEconomyManager();
-	if (economyMgr->GetEnergyCur() < economyMgr->GetEnergyStore() * 0.55f) {
+	if (economyMgr->GetEnergyCur() < economyMgr->GetEnergyStore() * 0.25f) {
 		manager->AbortTask(this);
 	}
 }

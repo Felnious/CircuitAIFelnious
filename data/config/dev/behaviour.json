@@ -85,6 +85,8 @@
 		// "anti_stat" - only static targets
 		// "no_repair" - do not repair marked unit
 		// "no_disrupt" - do not disrupt from assigned build-task
+		// "juno" - stockpile weapon targets enemy radar/jammer/scout instead of highest-cost group
+		// "emp" - stockpile weapon prefers enemy factories/defenses over generic cost-based group
 //		"attribute": ["boost", "no_strafe"],
 
 		// Fire state (fire at will by default)
@@ -222,6 +224,15 @@
 		"power": 0.4,
 		"build_speed": 5.0
 	},
+
+	// Juno silos: launched at enemy radar/jammer/scout to counter-intel
+	"armjuno": {
+		"attribute": ["juno"]
+	},
+	"corjuno": {
+		"attribute": ["juno"]
+	},
+
 	"corcomlvl2": {
 		"role": ["builder"],
 		"attribute": ["commander"],
@@ -471,10 +482,17 @@
 	},
 	"armemp": {
 		"role": ["static"],
+		"attribute": ["emp"],
 		"limit": 1
 	},
 	"cortron": {
 		"role": ["static"],
+		"attribute": ["emp"],
+		"limit": 1
+	},
+	"legperdition": {
+		"role": ["static"],
+		"attribute": ["emp"],
 		"limit": 1
 	},
 

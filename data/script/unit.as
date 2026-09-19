@@ -59,6 +59,8 @@ TypeMask NO_DGUN    = aiAttrMasker.GetTypeMask("no_dgun");
 TypeMask ANTI_STAT  = aiAttrMasker.GetTypeMask("anti_stat");
 TypeMask NO_REPAIR  = aiAttrMasker.GetTypeMask("no_repair");
 TypeMask NO_DISRUPT = aiAttrMasker.GetTypeMask("no_disrupt");
+TypeMask JUNO       = aiAttrMasker.GetTypeMask("juno");
+TypeMask EMP        = aiAttrMasker.GetTypeMask("emp");
 }  // namespace Attr
 
 enum UseAs {

@@ -45,7 +45,7 @@ void AiUpdateEconomy()
 			|| ((energy.income < energy.pull) && (energy.current < energy.storage * 0.7f));
 	}
 	// NOTE: Default energy-to-metal conversion TeamRulesParam "mmLevel" = 0.75
-	aiEconomyMgr.isEnergyFull = energy.current > energy.storage * 0.88f;
+	aiEconomyMgr.isEnergyFull = energy.current > energy.storage * 0.25f;
 
 	isSwitchAssist = isSwitchAssist && aiFactoryMgr.isAssistRequired;
 	aiFactoryMgr.isAssistRequired = isSwitchAssist

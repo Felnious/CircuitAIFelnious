@@ -12,6 +12,9 @@
 
 namespace circuit {
 
+class CCircuitDef;
+class CEnemyInfo;
+
 class CSuperTask final: public IFighterTask {
 public:
 	CSuperTask(ITaskModule* mgr);
@@ -28,6 +31,8 @@ public:
 
 private:
 	void ExecuteAttack(CCircuitUnit* unit);
+	CEnemyInfo* FindJunoTarget(CCircuitUnit* unit, CCircuitDef* cdef, int frame);
+	CEnemyInfo* FindEmpTarget(CCircuitUnit* unit, CCircuitDef* cdef, int frame);
 
 	int targetFrame;
 	springai::AIFloat3 targetPos;

@@ -50,6 +50,25 @@
 		"build_speed": 5.0
 	},
 
+	// Juno silos: launched at enemy radar/jammer/scout to counter-intel
+	"armjuno": {
+		"attribute": ["juno"]
+	},
+	"corjuno": {
+		"attribute": ["juno"]
+	},
+
+	// EMP silos: launched at enemy labs/defenses over generic cost-based group
+	"armemp": {
+		"attribute": ["emp"]
+	},
+	"cortron": {
+		"attribute": ["emp"]
+	},
+	"legperdition": {
+		"attribute": ["emp"]
+	},
+
 	// ARMADA defenses
 	"armllt": {
 		"role": ["static"]

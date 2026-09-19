@@ -92,6 +92,8 @@ void CCircuitDef::InitStatic(CCircuitAI* circuit, CMaskHandler* roleMasker, CMas
 		{"anti_stat",  {ATTR_TYPE(ANTI_STAT),  CCircuitDef::AttrMask::ANTI_STAT}},
 		{"no_repair",  {ATTR_TYPE(NO_REPAIR),  CCircuitDef::AttrMask::NO_REPAIR}},
 		{"no_disrupt", {ATTR_TYPE(NO_DISRUPT), CCircuitDef::AttrMask::NO_DISRUPT}},
+		{"juno",       {ATTR_TYPE(JUNO),       CCircuitDef::AttrMask::JUNO}},
+		{"emp",        {ATTR_TYPE(EMP),        CCircuitDef::AttrMask::EMP}},
 	};
 	for (auto& kv : attrs) {
 		CMaskHandler::TypeMask tm = attrMasker->GetTypeMask(kv.first);
@@ -166,6 +168,7 @@ CCircuitDef::CCircuitDef(CCircuitAI* circuit, UnitDef* def, std::unordered_set<I
 		, isAssist(false)
 		, isRadar(false)
 		, isSonar(false)
+		, isJammer(false)
 		, isDecoy(false)
 		, isOnSlow(false)
 		, isOn(true)

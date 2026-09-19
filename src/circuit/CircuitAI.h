@@ -327,6 +327,7 @@ private:
 	std::string sideName;
 	int telemetryUnitsBuilt = 0;
 	int telemetryUnitsLost = 0;
+	bool telemetryLogged = false;
 	std::shared_ptr<IMainJob> mergeTask;
 
 	std::unique_ptr<COOAICallback>        callback;

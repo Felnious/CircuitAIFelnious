@@ -305,6 +305,9 @@ void CMilitaryManager::InitHandlers()
 				sonarDefs.AddDef(&cdef);
 				cdef.SetIsSonar(true);
 			}
+			if (cdef.GetDef()->GetJammerRadius() > 1.f) {
+				cdef.SetIsJammer(true);
+			}
 		}
 	}
 

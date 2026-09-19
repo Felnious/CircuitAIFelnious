@@ -44,6 +44,7 @@
 #include "Pathing.h"
 #include "Drawer.h"
 #include "Economy.h"
+#include "DataDirs.h"
 #include "Resource.h"
 #include "SkirmishAI.h"
 #include "WrappUnit.h"
@@ -153,7 +154,6 @@ int CCircuitAI::HandleEvent(int topic, const void* data)
 
 void CCircuitAI::NotifyGameEnd()
 {
-	LogTelemetry();
 	eventHandler = &CCircuitAI::HandleEndEvent;
 }
 
@@ -165,8 +165,21 @@ void CCircuitAI::LogTelemetry()
 	const float energyIncome = (economy != nullptr && energy != nullptr) ? economy->GetIncome(energy) : -1.f;
 	const int unitsAlive = static_cast<int>(teamUnits.size());
 
-	LOG("METRIC faction=%s metalIncome=%f energyIncome=%f unitsBuilt=%i unitsLost=%i unitsAlive=%i damageDealt=unavailable",
-		sideName.c_str(), metalIncome, energyIncome, telemetryUnitsBuilt, telemetryUnitsLost, unitsAlive);
+	char telemetryPath[4096];
+	if (callback->GetDataDirs()->LocatePath(telemetryPath, sizeof(telemetryPath),
+			"telemetry/metrics.log", true, true, false, false))
+	{
+		std::ofstream telemetry(telemetryPath, std::ios::app);
+		if (telemetry.is_open()) {
+			telemetry << "METRIC faction=" << sideName
+				<< " metalIncome=" << metalIncome
+				<< " energyIncome=" << energyIncome
+				<< " unitsBuilt=" << telemetryUnitsBuilt
+				<< " unitsLost=" << telemetryUnitsLost
+				<< " unitsAlive=" << unitsAlive
+				<< " damageDealt=unavailable\n";
+		}
+	}
 }
 
 void CCircuitAI::NotifyResign()
@@ -748,6 +761,11 @@ int CCircuitAI::Init(int skirmishAIId, const struct SSkirmishAICallback* sAICall
 
 int CCircuitAI::Release(int reason)
 {
+	if (!telemetryLogged) {
+		LogTelemetry();
+		telemetryLogged = true;
+	}
+
 	delete economy, delete metalRes, delete energyRes;
 	economy = nullptr;
 	metalRes = energyRes = nullptr;
