@@ -52,21 +52,44 @@
 
 	// Juno silos: launched at enemy radar/jammer/scout to counter-intel
 	"armjuno": {
+		"role": ["static"],
 		"attribute": ["juno"]
 	},
 	"corjuno": {
+		"role": ["static"],
 		"attribute": ["juno"]
 	},
 
 	// EMP silos: launched at enemy labs/defenses over generic cost-based group
 	"armemp": {
+		"role": ["static"],
 		"attribute": ["emp"]
 	},
 	"cortron": {
+		"role": ["static"],
 		"attribute": ["emp"]
 	},
 	"legperdition": {
+		"role": ["static"],
 		"attribute": ["emp"]
+	},
+
+	// Fusion reactors: cluster at fixed energy-base anchor instead of spreading out
+	"armfus": {
+		"role": ["static"],
+		"attribute": ["base"]
+	},
+	"armafus": {
+		"role": ["static"],
+		"attribute": ["base"]
+	},
+	"corfus": {
+		"role": ["static"],
+		"attribute": ["base"]
+	},
+	"corafus": {
+		"role": ["static"],
+		"attribute": ["base"]
 	},
 
 	// ARMADA defenses

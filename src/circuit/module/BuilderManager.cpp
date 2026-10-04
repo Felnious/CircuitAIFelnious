@@ -975,7 +975,10 @@ IUnitTask* CBuilderManager::DefaultMakeTask(CCircuitUnit* unit)
 						? MakeBuilderTask(unit, pQuery.get())
 						: MakeCommTask(unit, pQuery.get(), hide->sqPeaceTaskRad);
 			}
-			if (circuit->GetInflMap()->GetEnemyInflAt(pos) >= hide->threat) {
+			constexpr float COMM_RETREAT_RANGE = 300.f;
+			if ((circuit->GetInflMap()->GetEnemyInflAt(pos) >= hide->threat)
+				|| !circuit->GetCallback()->GetEnemyUnitIdsIn(pos, COMM_RETREAT_RANGE).empty())
+			{
 				dangerTime[unit] = frame;
 			}
 //			if ((enemyMgr->GetMobileThreat() / circuit->GetAllyTeam()->GetAliveSize() >= hide->threat)
@@ -1258,14 +1261,15 @@ IBuilderTask* CBuilderManager::MakeCommTask(CCircuitUnit* unit, const CQueryCost
 		}
 	}
 
+	// Never leave commander idle without at least trying to guard/patrol at high priority
 	if ((task == nullptr) &&
 		((unit->GetTask()->GetType() != IUnitTask::Type::BUILDER) || (static_cast<IBuilderTask*>(unit->GetTask())->GetBuildType() != IBuilderTask::BuildType::GUARD)))
 	{
 		CCircuitUnit* vip = circuit->GetFactoryManager()->GetClosestFactory(pos);
 		if (vip != nullptr) {
-			task = EnqueueB(TaskB::Guard(IBuilderTask::Priority::NORMAL, vip, true, FRAMES_PER_SEC * 60));
+			task = EnqueueB(TaskB::Guard(IBuilderTask::Priority::HIGH, vip, true, FRAMES_PER_SEC * 60));
 		} else {
-			task = EnqueueB(TaskB::Patrol(IBuilderTask::Priority::LOW, pos, FRAMES_PER_SEC * 5));
+			task = EnqueueB(TaskB::Patrol(IBuilderTask::Priority::HIGH, pos, FRAMES_PER_SEC * 5));
 		}
 	}
 

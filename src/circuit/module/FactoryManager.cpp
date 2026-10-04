@@ -300,6 +300,7 @@ void CFactoryManager::InitHandlers()
 			idleHandler[unitDefId] = assistIdleHandler;
 			destroyedHandler[unitDefId] = assistDestroyedHandler;
 			economyMgr->AddAssistDef(&cdef);
+			cdef.AddAttribute(ATTR_TYPE(VAMPIRE));  // construction turrets auto-reclaim enemies in range
 		}
 	}
 }
@@ -719,6 +720,9 @@ void CFactoryManager::Init()
 		scheduler->RunJobEvery(CScheduler::GameJob(&CFactoryManager::Watchdog, this),
 								FRAMES_PER_SEC * 60,
 								circuit->GetSkirmishAIId() * WATCHDOG_COUNT + 11);
+		scheduler->RunJobEvery(CScheduler::GameJob(&CFactoryManager::ClearExits, this),
+								FRAMES_PER_SEC * 5,
+								offset + 1);
 	};
 
 	circuit->GetSetupManager()->ExecOnFindStart(subinit);
@@ -883,6 +887,10 @@ bool CFactoryManager::IsSwitchTime()
 {
 	if (!isSwitchTime) {
 		isSwitchTime = static_cast<CFactoryScript*>(script)->IsSwitchTime(lastSwitchFrame);
+		// Force tech-up if still stuck on the starting factory 8+ minutes into the game
+		if (!isSwitchTime && (factories.size() <= 1) && (circuit->GetLastFrame() >= FRAMES_PER_SEC * 60 * 8)) {
+			isSwitchTime = true;
+		}
 	}
 	return isSwitchTime;
 }
@@ -991,6 +999,16 @@ CCircuitUnit* CFactoryManager::GetClosestFactory(const AIFloat3& position)
 //	return roleDef;
 //}
 
+unsigned int CFactoryManager::GetNanoCount(CCircuitUnit* factory) const
+{
+	for (const SFactory& fac : factories) {
+		if (fac.unit == factory) {
+			return fac.nanoSize;
+		}
+	}
+	return 0;
+}
+
 AIFloat3 CFactoryManager::GetClosestHaven(CCircuitUnit* unit) const
 {
 	if (havens.empty()) {
@@ -1057,7 +1075,30 @@ CRecruitTask* CFactoryManager::UpdateBuildPower(CCircuitUnit* unit, bool isActiv
 	CCircuitDef* buildDef = GetFacRoleDef(ROLE_TYPE(BUILDER), it->second);
 
 	if ((buildDef != nullptr) && buildDef->IsAvailable(circuit->GetLastFrame())) {
-		const AIFloat3& pos = unit->GetPos(circuit->GetLastFrame());
+		const AIFloat3& factoryPos = unit->GetPos(circuit->GetLastFrame());
+		AIFloat3 rearDir;
+		float factoryHalfSize;
+		switch (unit->GetUnit()->GetBuildingFacing()) {
+			default:
+			case UNIT_FACING_SOUTH:
+				rearDir = AIFloat3(0.f, 0.f, -1.f);
+				factoryHalfSize = unit->GetCircuitDef()->GetDef()->GetZSize() * (SQUARE_SIZE / 2.f);
+				break;
+			case UNIT_FACING_EAST:
+				rearDir = AIFloat3(-1.f, 0.f, 0.f);
+				factoryHalfSize = unit->GetCircuitDef()->GetDef()->GetXSize() * (SQUARE_SIZE / 2.f);
+				break;
+			case UNIT_FACING_NORTH:
+				rearDir = AIFloat3(0.f, 0.f, 1.f);
+				factoryHalfSize = unit->GetCircuitDef()->GetDef()->GetZSize() * (SQUARE_SIZE / 2.f);
+				break;
+			case UNIT_FACING_WEST:
+				rearDir = AIFloat3(1.f, 0.f, 0.f);
+				factoryHalfSize = unit->GetCircuitDef()->GetDef()->GetXSize() * (SQUARE_SIZE / 2.f);
+				break;
+		}
+		const float nanoHalfSize = std::max(buildDef->GetDef()->GetXSize(), buildDef->GetDef()->GetZSize()) * (SQUARE_SIZE / 2.f);
+		const AIFloat3 pos = factoryPos + rearDir * (factoryHalfSize + nanoHalfSize + SQUARE_SIZE);
 		CTerrainManager* terrainMgr = circuit->GetTerrainManager();
 		if (!terrainMgr->CanBeBuiltAt(buildDef, pos, unit->GetCircuitDef()->GetBuildDistance())) {
 			return nullptr;
@@ -1066,7 +1107,8 @@ CRecruitTask* CFactoryManager::UpdateBuildPower(CCircuitUnit* unit, bool isActiv
 		circuit->LOG("choice = %s | %f < %f or (%i and %i < %i)", buildDef->GetDef()->GetName(),
 				circuit->GetBuilderManager()->GetBuildPower(), metalIncome * bpRatio, isActive, r, RAND_MAX / 2);
 #endif
-		return Enqueue(TaskS::Recruit(CRecruitTask::RecruitType::BUILDPOWER, CRecruitTask::Priority::NORMAL, buildDef, pos, 64.f));
+		return Enqueue(TaskS::Recruit(CRecruitTask::RecruitType::BUILDPOWER, CRecruitTask::Priority::HIGH,
+				buildDef, pos, unit->GetCircuitDef()->GetBuildDistance()));
 	}
 	return nullptr;
 }
@@ -1476,21 +1518,15 @@ IUnitTask* CFactoryManager::CreateFactoryTask(CCircuitUnit* unit)
 		return task;
 	}
 
-	CEconomyManager* economyMgr = circuit->GetEconomyManager();
-	const bool isStalling = economyMgr->IsMetalEmpty() &&
-							(economyMgr->GetAvgMetalIncome() * 1.2f < economyMgr->GetMetalPull()) &&
-							(metalPull * economyMgr->GetPullMtoS() > circuit->GetBuilderManager()->GetMetalPull());
-	const bool isNotReady = !economyMgr->IsExcessed() || isStalling;
-	if (isNotReady) {
-		return Enqueue(TaskS::Wait(false, FRAMES_PER_SEC * 3));
-	}
-
+	// Labs must never idle: always try to queue the next unit immediately instead of waiting
+	// out an economy-stall/excess timer (was FRAMES_PER_SEC*3/10, causing a multi-second gap
+	// between units even when a valid build option existed).
 	task = UpdateFirePower(unit, isActive);
 	if (task != nullptr) {
 		return task;
 	}
 
-	return Enqueue(TaskS::Wait(false, isActive ? (FRAMES_PER_SEC * 3) : (FRAMES_PER_SEC * 10)));
+	return Enqueue(TaskS::Wait(false, 1));
 }
 
 IUnitTask* CFactoryManager::CreateAssistTask(CCircuitUnit* unit)
@@ -1580,6 +1616,97 @@ void CFactoryManager::Watchdog()
 
 	for (auto& kv : assists) {
 		checkIdler(kv.first);
+	}
+}
+
+// Anything static and finished in a lab's exit cone is reclaimed before it can block production.
+#define FACTORY_EXIT_RADIUS		50.f
+
+void CFactoryManager::ClearExits()
+{
+	ZoneScopedN(__PRETTY_FUNCTION__);
+
+	const int frame = circuit->GetLastFrame();
+	CBuilderManager* builderMgr = circuit->GetBuilderManager();
+
+	for (SFactory& fac : factories) {
+		CCircuitDef* facDef = fac.unit->GetCircuitDef();
+		const AIFloat3& facPos = fac.unit->GetPos(frame);
+
+		AIFloat3 dir;
+		float edgeOffset;
+		switch (fac.unit->GetUnit()->GetBuildingFacing()) {
+			default:
+			case UNIT_FACING_SOUTH:
+				dir = AIFloat3(0.f, 0.f, 1.f);
+				edgeOffset = facDef->GetDef()->GetZSize() * (SQUARE_SIZE / 2.f);
+				break;
+			case UNIT_FACING_EAST:
+				dir = AIFloat3(1.f, 0.f, 0.f);
+				edgeOffset = facDef->GetDef()->GetXSize() * (SQUARE_SIZE / 2.f);
+				break;
+			case UNIT_FACING_NORTH:
+				dir = AIFloat3(0.f, 0.f, -1.f);
+				edgeOffset = facDef->GetDef()->GetZSize() * (SQUARE_SIZE / 2.f);
+				break;
+			case UNIT_FACING_WEST:
+				dir = AIFloat3(-1.f, 0.f, 0.f);
+				edgeOffset = facDef->GetDef()->GetXSize() * (SQUARE_SIZE / 2.f);
+				break;
+		}
+
+		const AIFloat3 edgePos = facPos + dir * edgeOffset;
+		const AIFloat3 exitPos = edgePos + dir * FACTORY_EXIT_RADIUS;
+
+		std::vector<CCircuitUnit*> reclaimers;
+		for (const auto& [unitId, unit] : circuit->GetTeamUnits()) {
+			if (unit->GetCircuitDef()->IsAbleToReclaim()
+				&& (unit->GetPos(frame).SqDistance2D(exitPos) <= SQUARE(400.f)))
+			{
+				reclaimers.push_back(unit);
+			}
+		}
+
+		circuit->UpdateFriendlyUnits();
+		const auto& friendlies = circuit->GetCallback()->GetFriendlyUnitIdsIn(exitPos, FACTORY_EXIT_RADIUS, false);
+		for (const int unitId : friendlies) {
+			CCircuitUnit* teamUnit = circuit->GetTeamUnit(unitId);
+			CAllyUnit* cand = (teamUnit != nullptr) ? teamUnit : circuit->GetFriendlyUnit(unitId);
+			const bool isTeam = (teamUnit != nullptr);
+			if ((cand == nullptr) || (cand->GetId() == fac.unit->GetId())) {
+				continue;
+			}
+			CCircuitDef* cdef = cand->GetCircuitDef();
+			if ((cdef == nullptr) || cdef->IsMobile() || cand->GetUnit()->IsBeingBuilt()) {
+				continue;
+			}
+			if ((cand->GetPos(frame) - edgePos).dot2D(dir) < 0.f) {
+				continue;  // behind/beside the lab, not blocking the exit
+			}
+			if (isTeam) {
+				builderMgr->Enqueue(TaskB::Reclaim(IBuilderTask::Priority::HIGH, static_cast<CCircuitUnit*>(cand)));
+				continue;
+			}
+
+			for (CCircuitUnit* reclaimer : reclaimers) {
+				if (reclaimer->GetPos(frame).SqDistance2D(cand->GetPos(frame))
+						> SQUARE(reclaimer->GetCircuitDef()->GetBuildDistance()))
+				{
+					continue;
+				}
+				TRY_UNIT(circuit, reclaimer,
+					reclaimer->CmdReclaimUnit(cand, UNIT_CMD_OPTION, frame + FRAMES_PER_SEC * 60);
+				)
+			}
+		}
+
+		if (circuit->GetCallback()->IsFeaturesIn(exitPos, FACTORY_EXIT_RADIUS)
+			&& !builderMgr->IsResurrect(exitPos, FACTORY_EXIT_RADIUS)
+			&& !builderMgr->IsReclaimFeature(exitPos, FACTORY_EXIT_RADIUS))
+		{
+			builderMgr->Enqueue(TaskB::Reclaim(IBuilderTask::Priority::HIGH, exitPos, 1000.f,
+					FRAMES_PER_SEC * 60, FACTORY_EXIT_RADIUS, false));
+		}
 	}
 }
 

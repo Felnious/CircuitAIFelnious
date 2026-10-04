@@ -150,6 +150,7 @@ private:
 	float GetStorage(springai::Resource* res);
 	void UpdateResourceIncome();
 	void UpdateEconomy();
+	void ForceReclaimT1EnergyAfter20Min();
 
 	Handlers2 createdHandler;
 	Handlers1 finishedHandler;
@@ -225,6 +226,7 @@ private:
 	};
 	CAvailList<SEnergyExt> energyDefs;
 	void ReclaimOldEnergy(const SEnergyExt* energyExt);
+	void ReclaimAllT1Energy();
 
 	float ecoStep = 0.f;
 	float ecoFactor = 0.f;

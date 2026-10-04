@@ -64,61 +64,11 @@ void CRecruitTask::Start(CCircuitUnit* unit)
 
 void CRecruitTask::Update()
 {
-	if (units.empty()) {
-		return;
-	}
-
-	CCircuitAI* circuit = manager->GetCircuit();
-	CEconomyManager* economyMgr = circuit->GetEconomyManager();
-
-	const bool isEnergyEmpty = economyMgr->IsEnergyEmpty();
-	for (CCircuitUnit* unit : units) {
-		TRY_UNIT(circuit, unit,
-			unit->CmdWait(isEnergyEmpty);
-		)
-	}
-	if (isEnergyEmpty) {
-		return;
-	}
-
-	bool hasMetal = economyMgr->GetAvgMetalIncome() * 2.0f > economyMgr->GetMetalPull();
-	if (State::DISENGAGE == state) {
-		if (hasMetal) {
-			state = State::ROAM;  // Not wait
-			for (CCircuitUnit* unit : units) {
-				TRY_UNIT(circuit, unit,
-					unit->CmdPriority(ClampPriority());
-					unit->CmdBARPriority(ClampPriority());
-				)
-			}
-		}
-	} else {
-		if (!hasMetal) {
-			state = State::DISENGAGE;  // Wait
-			for (CCircuitUnit* unit : units) {
-				TRY_UNIT(circuit, unit,
-					unit->CmdPriority(0);
-					unit->CmdBARPriority(0);
-				)
-			}
-		}
-	}
 }
 
 void CRecruitTask::Finish()
 {
 	Cancel();
-
-	CCircuitAI* circuit = manager->GetCircuit();
-	const int buildDelay = circuit->GetEconomyManager()->GetBuildDelay();
-	if (buildDelay > 0) {
-		// NOTE: force-stop as there could be bug present that queues more than 1 unit
-		IUnitTask* task = circuit->GetFactoryManager()->Enqueue(TaskS::Wait(true, buildDelay));
-		decltype(units) tmpUnits = units;
-		for (CCircuitUnit* unit : tmpUnits) {
-			manager->AssignTask(unit, task);
-		}
-	}
 }
 
 void CRecruitTask::Cancel()
@@ -157,7 +107,10 @@ bool CRecruitTask::Execute(CCircuitUnit* unit)
 	)
 	const int frame = circuit->GetLastFrame();
 
-	if (unit->GetCircuitDef()->IsHub()) {
+	if (recruitType == RecruitType::BUILDPOWER) {
+		buildPos = circuit->GetTerrainManager()->FindBuildSite(buildDef, position, SQUARE_SIZE * 2,
+				UNIT_NO_FACING, true);
+	} else if (unit->GetCircuitDef()->IsHub()) {
 		AIFloat3 pos = unit->GetPos(frame);
 		const float size = DEFAULT_SLACK / 2;
 		switch (unit->GetUnit()->GetBuildingFacing()) {

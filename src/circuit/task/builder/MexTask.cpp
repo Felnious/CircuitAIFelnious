@@ -72,6 +72,11 @@ bool CBMexTask::CanAssignTo(CCircuitUnit* unit) const
 	if (unit->GetCircuitDef()->IsAttacker()) {
 		return true;
 	}
+	// T1 construction units expand immediately, bypassing the escort/guard wait
+	constexpr float T1_CON_FAST_EXPAND_COST = 200.f;
+	if (!cdef->IsRoleComm() && (cdef->GetCostM() < T1_CON_FAST_EXPAND_COST)) {
+		return true;
+	}
 	CMilitaryManager* militaryMgr = circuit->GetMilitaryManager();
 	if ((militaryMgr->GetGuardTaskNum() == 0) || (circuit->GetLastFrame() > militaryMgr->GetGuardFrame())) {
 		return true;

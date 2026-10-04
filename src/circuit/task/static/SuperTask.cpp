@@ -9,6 +9,8 @@
 #include "task/fighter/SquadTask.h"
 #include "map/InfluenceMap.h"
 #include "module/MilitaryManager.h"
+#include "setup/SetupManager.h"
+#include "terrain/TerrainManager.h"
 #include "unit/enemy/EnemyUnit.h"
 #include "unit/CircuitUnit.h"
 #include "CircuitAI.h"
@@ -19,7 +21,9 @@
 
 #include "AISCommands.h"
 #include "Lua.h"
+#include "Log.h"
 
+#include <cctype>
 #include <format>
 
 namespace circuit {
@@ -58,6 +62,9 @@ void CSuperTask::Start(CCircuitUnit* unit)
 	const int frame = manager->GetCircuit()->GetLastFrame();
 	targetFrame = frame - TARGET_DELAY;
 	position = unit->GetPos(frame);
+	if (unit->GetCircuitDef()->IsAttrJuno()) {
+		manager->GetCircuit()->LOG("%s: CSuperTask::Start", unit->GetCircuitDef()->GetDef()->GetName());
+	}
 }
 
 void CSuperTask::Update()
@@ -65,6 +72,10 @@ void CSuperTask::Update()
 	CCircuitAI* circuit = manager->GetCircuit();
 	const int frame = circuit->GetLastFrame();
 	CCircuitUnit* unit = *units.begin();
+
+	if (unit->GetCircuitDef()->IsAttrJuno()) {
+		circuit->LOG("%s: CSuperTask::Update enter, blocker=%d", unit->GetCircuitDef()->GetDef()->GetName(), unit->Blocker() != nullptr);
+	}
 
 	if (unit->Blocker() != nullptr) {
 		return;  // Do not interrupt current action
@@ -90,9 +101,32 @@ void CSuperTask::Update()
 		return;
 	}
 
-	if (cdef->IsAttrJuno()) {
-		CEnemyInfo* bestTarget = FindJunoTarget(unit, cdef, frame);
-		if (bestTarget == nullptr) {
+	if (cdef->IsAttrJuno() || cdef->IsAttrEmp()) {
+		// Force-fire the instant a rocket is ready: always resolve *some* target/position,
+		// bypassing the ally-influence/avoid-overlap gating used by the default group logic below
+		// (that gating could reject every candidate and leave the silo stockpiling forever).
+		AIFloat3 firePos = -RgtVector;
+		const std::string defName = cdef->GetDef()->GetName();
+		if (cdef->IsAttrJuno()) {
+			// Diagnostic: this branch is only reached once per TARGET_DELAY/reload window, so
+			// logging here is cheap and shows the real ammo state (actual firing needs the
+			// engine's stockpile count > 0, which is independent of our targeting logic).
+			circuit->LOG("%s: stockpile=%d queued=%d fireState=%d holdFire=%d",
+					defName.c_str(), unit->GetUnit()->GetStockpile(), unit->GetUnit()->GetStockpileQueued(),
+					cdef->GetFireState(), (int)cdef->IsHoldFire());
+		}
+		const bool isPriorityEmp = cdef->IsAttrEmp()
+				&& ((defName == "cortron") || (defName == "legperdition"));
+		float empMetal = 0.f;
+		CEnemyInfo* bestTarget;
+		if (cdef->IsAttrJuno()) {
+			bestTarget = FindJunoTarget(unit, cdef, frame, firePos);
+		} else if (isPriorityEmp) {
+			bestTarget = FindPriorityEmpTarget(unit, cdef, frame, firePos);
+		} else {
+			bestTarget = FindEmpTarget(unit, cdef, frame, firePos, empMetal);
+		}
+		if ((bestTarget == nullptr) && !geom::is_valid(firePos)) {
 			TRY_UNIT(circuit, unit,
 				unit->CmdStop();
 			)
@@ -100,25 +134,15 @@ void CSuperTask::Update()
 			targetFrame = frame;
 			return;
 		}
-		SetTarget(bestTarget);
-		targetPos = bestTarget->GetPos();
-		targetPos.y = circuit->GetMap()->GetElevationAt(targetPos.x, targetPos.z);
-		ExecuteAttack(unit);
-		return;
-	}
-
-	if (cdef->IsAttrEmp()) {
-		CEnemyInfo* bestTarget = FindEmpTarget(unit, cdef, frame);
-		if (bestTarget == nullptr) {
-			TRY_UNIT(circuit, unit,
-				unit->CmdStop();
-			)
-			SetTarget(nullptr);
-			targetFrame = frame;
-			return;
+		if (cdef->IsAttrEmp() && !isPriorityEmp && (empMetal > 0.f)) {
+			std::string label = defName;
+			if (!label.empty()) {
+				label[0] = std::toupper((unsigned char)label[0]);
+			}
+			circuit->LOG("%s'd %.0f Metal", label.c_str(), empMetal);
 		}
 		SetTarget(bestTarget);
-		targetPos = bestTarget->GetPos();
+		targetPos = (bestTarget != nullptr) ? bestTarget->GetPos() : firePos;
 		targetPos.y = circuit->GetMap()->GetElevationAt(targetPos.x, targetPos.z);
 		ExecuteAttack(unit);
 		return;
@@ -251,67 +275,181 @@ void CSuperTask::Update()
 	}
 }
 
-CEnemyInfo* CSuperTask::FindJunoTarget(CCircuitUnit* unit, CCircuitDef* cdef, int frame)
+CEnemyInfo* CSuperTask::FindJunoTarget(CCircuitUnit* unit, CCircuitDef* cdef, int frame, AIFloat3& outPos)
 {
 	CCircuitAI* circuit = manager->GetCircuit();
 	const AIFloat3& pos = unit->GetPos(frame);
 	const float range = cdef->GetMaxRange();
-	auto& enemyIds = circuit->GetCallback()->GetEnemyUnitIdsIn(pos, range);
 
-	// Juno reveals stealth/jammed enemies, so prioritize sensor and scout targets over raw cost
-	CEnemyInfo* bestTarget = nullptr;
-	float maxScore = 0.f;
+	// Force-fire Juno at a visible enemy to keep harassing the front line; Labs and Defenses
+	// (immobile builders / immobile attackers) take priority over everything else in range.
+	auto& enemyIds = circuit->GetCallback()->GetEnemyUnitIdsIn(pos, range);
+	std::vector<CEnemyInfo*> labs;
+	std::vector<CEnemyInfo*> defenses;
+	std::vector<CEnemyInfo*> candidates;
 	for (int eId : enemyIds) {
 		CEnemyInfo* enemy = circuit->GetEnemyInfo(eId);
-		if ((enemy == nullptr) || enemy->NotInRadarAndLOS()) {
+		if ((enemy == nullptr) || !enemy->IsInRadarOrLOS()) {
 			continue;
 		}
+		candidates.push_back(enemy);
 		CCircuitDef* edef = enemy->GetCircuitDef();
-		if (edef == nullptr) {
-			continue;
-		}
-		const bool isSensor = edef->IsRadar() || edef->IsJammer();
-		if (!isSensor && !edef->IsRoleScout()) {
-			continue;
-		}
-		const float score = (isSensor ? 2.f : 1.f) * (enemy->GetCost() + 1.f);
-		if (maxScore < score) {
-			maxScore = score;
-			bestTarget = enemy;
+		if ((edef != nullptr) && !edef->IsMobile()) {
+			if (edef->IsBuilder()) {
+				labs.push_back(enemy);
+			} else if (edef->IsAttacker()) {
+				defenses.push_back(enemy);
+			}
 		}
 	}
-	return bestTarget;
+	if (!labs.empty()) {
+		return labs[rand() % labs.size()];
+	}
+	if (!defenses.empty()) {
+		return defenses[rand() % defenses.size()];
+	}
+	if (!candidates.empty()) {
+		return candidates[rand() % candidates.size()];
+	}
+
+	// No visible enemy: aim at a random known contact, or blind at the front line
+	const std::vector<CEnemyManager::SEnemyGroup>& groups = circuit->GetEnemyManager()->GetEnemyGroups();
+	std::vector<const CEnemyManager::SEnemyGroup*> nearGroups;
+	for (const CEnemyManager::SEnemyGroup& group : groups) {
+		if (pos.SqDistance2D(group.pos) < SQUARE(range)) {
+			nearGroups.push_back(&group);
+		}
+	}
+	if (!nearGroups.empty()) {
+		outPos = nearGroups[rand() % nearGroups.size()]->pos;
+		return nullptr;
+	}
+
+	const AIFloat3& lanePos = circuit->GetSetupManager()->GetLanePos();
+	const AIFloat3& anchor = geom::is_valid(lanePos) ? lanePos : pos;  // always resolve to something
+	const float jitter = std::min(range * 0.5f, 1000.f);
+	outPos = anchor + AIFloat3((float)(rand() % 2001 - 1000) * 0.001f * jitter, 0.f,
+								(float)(rand() % 2001 - 1000) * 0.001f * jitter);
+	CTerrainManager::CorrectPosition(outPos);
+	return nullptr;
 }
 
-CEnemyInfo* CSuperTask::FindEmpTarget(CCircuitUnit* unit, CCircuitDef* cdef, int frame)
+CEnemyInfo* CSuperTask::FindEmpTarget(CCircuitUnit* unit, CCircuitDef* cdef, int frame, AIFloat3& outPos, float& outMetal)
 {
 	CCircuitAI* circuit = manager->GetCircuit();
 	const AIFloat3& pos = unit->GetPos(frame);
 	const float range = cdef->GetMaxRange();
-	auto& enemyIds = circuit->GetCallback()->GetEnemyUnitIdsIn(pos, range);
 
-	// EMP paralyzes, so prefer static high-value targets (labs, defenses) over generic units
-	CEnemyInfo* bestTarget = nullptr;
-	float maxScore = 0.f;
-	for (int eId : enemyIds) {
-		CEnemyInfo* enemy = circuit->GetEnemyInfo(eId);
-		if ((enemy == nullptr) || enemy->NotInRadarAndLOS()) {
+	outMetal = 0.f;
+
+	// Highest total-cost known group in range ("biggest metal clump") - no ally-safety gating
+	const std::vector<CEnemyManager::SEnemyGroup>& groups = circuit->GetEnemyManager()->GetEnemyGroups();
+	const CEnemyManager::SEnemyGroup* bestGroup = nullptr;
+	float bestCost = 0.f;
+	for (const CEnemyManager::SEnemyGroup& group : groups) {
+		if (pos.SqDistance2D(group.pos) >= SQUARE(range)) {
 			continue;
 		}
+		if (bestCost < group.cost) {
+			bestCost = group.cost;
+			bestGroup = &group;
+		}
+	}
+	if (bestGroup != nullptr) {
+		outMetal = bestGroup->cost;
+		float minSqDist = std::numeric_limits<float>::max();
+		CEnemyInfo* bestTarget = nullptr;
+		for (const ICoreUnit::Id eId : bestGroup->units) {
+			CEnemyInfo* enemy = circuit->GetEnemyInfo(eId);
+			if (enemy == nullptr) {
+				continue;
+			}
+			const float sqDist = bestGroup->pos.SqDistance2D(enemy->GetPos());
+			if (minSqDist > sqDist) {
+				minSqDist = sqDist;
+				bestTarget = enemy;
+			}
+		}
+		if (bestTarget != nullptr) {
+			return bestTarget;
+		}
+		outPos = bestGroup->pos;
+		return nullptr;
+	}
+
+	// Nothing in range yet: aim at any other known group, else blind at the front line
+	if (!groups.empty()) {
+		outPos = groups[rand() % groups.size()].pos;
+		return nullptr;
+	}
+
+	const AIFloat3& lanePos = circuit->GetSetupManager()->GetLanePos();
+	outPos = geom::is_valid(lanePos) ? lanePos : pos;  // always resolve to something
+	CTerrainManager::CorrectPosition(outPos);
+	return nullptr;
+}
+
+CEnemyInfo* CSuperTask::FindPriorityEmpTarget(CCircuitUnit* unit, CCircuitDef* cdef, int frame, AIFloat3& outPos)
+{
+	CCircuitAI* circuit = manager->GetCircuit();
+	const AIFloat3& pos = unit->GetPos(frame);
+	const float range = cdef->GetMaxRange();
+
+	// Cortron/Legperdition: Afus/Fusion reactors > Labs (immobile builders) > other static
+	// structures > everything else visible in range.
+	auto& enemyIds = circuit->GetCallback()->GetEnemyUnitIdsIn(pos, range);
+	std::vector<CEnemyInfo*> fusions;
+	std::vector<CEnemyInfo*> labs;
+	std::vector<CEnemyInfo*> statics;
+	std::vector<CEnemyInfo*> candidates;
+	for (int eId : enemyIds) {
+		CEnemyInfo* enemy = circuit->GetEnemyInfo(eId);
+		if ((enemy == nullptr) || !enemy->IsInRadarOrLOS()) {
+			continue;
+		}
+		candidates.push_back(enemy);
 		CCircuitDef* edef = enemy->GetCircuitDef();
 		if (edef == nullptr) {
 			continue;
 		}
-		const bool isLab = edef->GetDef()->IsBuilder() && edef->IsBuilder();
-		const bool isDefense = !isLab && !edef->IsMobile() && edef->IsAttacker();
-		const float tier = isLab ? 3.f : (isDefense ? 2.f : 1.f);
-		const float score = tier * (enemy->GetCost() + 1.f);
-		if (maxScore < score) {
-			maxScore = score;
-			bestTarget = enemy;
+		if (std::string(edef->GetDef()->GetName()).find("fus") != std::string::npos) {
+			fusions.push_back(enemy);
+		} else if (!edef->IsMobile() && edef->IsBuilder()) {
+			labs.push_back(enemy);
+		} else if (!edef->IsMobile()) {
+			statics.push_back(enemy);
 		}
 	}
-	return bestTarget;
+	if (!fusions.empty()) {
+		return fusions[rand() % fusions.size()];
+	}
+	if (!labs.empty()) {
+		return labs[rand() % labs.size()];
+	}
+	if (!statics.empty()) {
+		return statics[rand() % statics.size()];
+	}
+	if (!candidates.empty()) {
+		return candidates[rand() % candidates.size()];
+	}
+
+	// Nothing visible: aim at any known group, else blind at the front line
+	const std::vector<CEnemyManager::SEnemyGroup>& groups = circuit->GetEnemyManager()->GetEnemyGroups();
+	std::vector<const CEnemyManager::SEnemyGroup*> nearGroups;
+	for (const CEnemyManager::SEnemyGroup& group : groups) {
+		if (pos.SqDistance2D(group.pos) < SQUARE(range)) {
+			nearGroups.push_back(&group);
+		}
+	}
+	if (!nearGroups.empty()) {
+		outPos = nearGroups[rand() % nearGroups.size()]->pos;
+		return nullptr;
+	}
+
+	const AIFloat3& lanePos = circuit->GetSetupManager()->GetLanePos();
+	outPos = geom::is_valid(lanePos) ? lanePos : pos;  // always resolve to something
+	CTerrainManager::CorrectPosition(outPos);
+	return nullptr;
 }
 
 void CSuperTask::SetTargetPos(const AIFloat3& pos)
@@ -336,7 +474,7 @@ void CSuperTask::ExecuteAttack(CCircuitUnit* unit)
 	circuit->GetLua()->CallRules(cmd.c_str(), cmd.size());
 
 	TRY_UNIT(circuit, unit,
-		if (!isTargetOverride && GetTarget()->IsInRadarOrLOS() && !circuit->IsCheating()) {
+		if (!isTargetOverride && (GetTarget() != nullptr) && GetTarget()->IsInRadarOrLOS() && !circuit->IsCheating()) {
 			unit->GetUnit()->Attack(GetTarget()->GetUnit(), UNIT_COMMAND_OPTION_RIGHT_MOUSE_KEY, frame + FRAMES_PER_SEC * 60);
 		} else {
 			unit->CmdAttackGround(targetPos, UNIT_COMMAND_OPTION_RIGHT_MOUSE_KEY, frame + FRAMES_PER_SEC * 60);

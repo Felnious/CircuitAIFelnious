@@ -28,6 +28,8 @@
 
 #include "AISCommands.h"
 #include "Resource.h"
+
+#include <unordered_set>
 #include "Economy.h"
 #include "Feature.h"
 #include "FeatureDef.h"
@@ -42,6 +44,68 @@ using namespace springai;
 
 const char* RES_NAME_METAL = "Metal";
 const char* RES_NAME_ENERGY = "Energy";
+
+namespace {
+
+constexpr float FUSION_UNLOCK_METAL = 45.f;
+constexpr float AFUS_UNLOCK_METAL = 125.f;  // Fusion builds in [45,125), Adv Fusion takes over at 125+
+constexpr float T2_LAB_UNLOCK_METAL = 40.f;
+constexpr float T3_LAB_UNLOCK_METAL = 200.f;
+
+// Con-turret (nano) grid behind the lab: 4 wide x 16 deep
+constexpr int   NANO_GRID_COLS = 4;
+constexpr int   NANO_GRID_ROWS = 16;
+constexpr float NANO_GRID_SPACING = 64.f;
+// Wind farm grid: 5 wide x 10 deep
+constexpr int   WIND_GRID_COLS = 5;
+constexpr float WIND_GRID_SPACING = 100.f;
+// Converter grid: 5x5
+constexpr int   CONV_GRID_COLS = 5;
+constexpr float CONV_GRID_SPACING = 110.f;
+
+bool IsFusionDef(const std::string& name)
+{
+	return (name == "armfus") || (name == "corfus") || (name == "legfus");
+}
+
+bool IsAfusDef(const std::string& name)
+{
+	return (name == "armafus") || (name == "corafus") || (name == "legafus");
+}
+
+bool IsT2LabDef(const std::string& name)
+{
+	return (name == "armalab") || (name == "coralab") || (name == "legalab");
+}
+
+bool IsT3LabDef(const std::string& name)
+{
+	return (name == "armshltx") || (name == "armshltxuw")
+		|| (name == "corgant") || (name == "corgantuw") || (name == "leggant");
+}
+
+// Direction a building's "back" faces, based on its placement facing
+AIFloat3 GetBackDir(int facing)
+{
+	switch (facing) {
+		default:
+		case UNIT_FACING_SOUTH: return AIFloat3(0.f, 0.f, -1.f);
+		case UNIT_FACING_EAST:  return AIFloat3(-1.f, 0.f, 0.f);
+		case UNIT_FACING_NORTH: return AIFloat3(0.f, 0.f, 1.f);
+		case UNIT_FACING_WEST:  return AIFloat3(1.f, 0.f, 0.f);
+	}
+}
+
+// Column-major grid slot position; col 0 is the block's center-left, row 0 is closest to anchor
+AIFloat3 GetGridPos(const AIFloat3& anchor, const AIFloat3& right, const AIFloat3& back,
+		int index, int cols, float spacing, int rowOffset = 0)
+{
+	const int col = index % cols;
+	const int row = index / cols + rowOffset;
+	return anchor + right * ((col - (cols - 1) * 0.5f) * spacing) + back * (row * spacing);
+}
+
+} // namespace
 
 CEconomyManager::CEconomyManager(CCircuitAI* circuit)
 		: IModule(circuit, new CEconomyScript(circuit->GetScriptManager(), this))
@@ -107,6 +171,9 @@ void CEconomyManager::InitHandlers()
 		}
 		energy.income += income;
 		ReclaimOldEnergy(energyExt);
+		if (unit->GetCircuitDef()->IsAttrBase()) {  // Fusion/Adv Fusion completed
+			ReclaimAllT1Energy();
+		}
 
 		UnitAdded(unit, UseAs::ENERGY);
 	};
@@ -679,6 +746,8 @@ void CEconomyManager::Init()
 
 		scheduler->RunJobEvery(CScheduler::GameJob(&CEconomyManager::UpdateEconomy, this),
 								TEAM_SLOWUPDATE_RATE, circuit->GetSkirmishAIId());
+		scheduler->RunJobEvery(CScheduler::GameJob(&CEconomyManager::ForceReclaimT1EnergyAfter20Min, this),
+								FRAMES_PER_SEC * 30, circuit->GetSkirmishAIId());
 	};
 
 	circuit->GetSetupManager()->ExecOnFindStart(subinit);
@@ -1172,15 +1241,18 @@ IBuilderTask* CEconomyManager::UpdateMetalTasks(const AIFloat3& position, CCircu
 		&& (builderMgr->GetTasks(IBuilderTask::BuildType::CONVERT).size() < 2)
 		&& ((mexTaskSize == 0) || (builderMgr->GetWorkerCount() > circuit->GetMilitaryManager()->GetGuardTaskNum() + 1)))
 	{
-		const AIFloat3& pos = circuit->GetSetupManager()->GetMetalBase();
-		CCircuitDef* convertDef = convertDefs.GetBestDef([frame, terrainMgr, &pos](CCircuitDef* cdef, const SConvertExt& data) {
-			return !data.isOld && cdef->IsAvailable(frame) && terrainMgr->CanBeBuiltAt(cdef, pos);
+		const AIFloat3& metalBase = circuit->GetSetupManager()->GetMetalBase();
+		CCircuitDef* convertDef = convertDefs.GetBestDef([frame, terrainMgr, &metalBase](CCircuitDef* cdef, const SConvertExt& data) {
+			return !data.isOld && cdef->IsAvailable(frame) && terrainMgr->CanBeBuiltAt(cdef, metalBase);
 		});
 		if (convertDef != nullptr) {
 			// NOTE: Next check may prevent converters even when open mex-spot is far
 			//       away in unknown territory.
 //			const SConvertExt* convertExt = convertDefs.GetAvailInfo(convertDef);
 //			if ((mexDef == nullptr) || (convertExt->make / convertDef->GetCostM() >= metalMgr->GetSpotAvgIncome() * mexDef->GetExtractsM() / mexDef->GetCostM())) {
+				const int convIdx = convertDef->GetCount() + (int)builderMgr->GetTasks(IBuilderTask::BuildType::CONVERT).size();
+				const AIFloat3 pos = GetGridPos(metalBase, AIFloat3(1.f, 0.f, 0.f), AIFloat3(0.f, 0.f, 1.f),
+						convIdx, CONV_GRID_COLS, CONV_GRID_SPACING);
 				task = builderMgr->Enqueue(TaskB::Common(IBuilderTask::BuildType::CONVERT,
 										   IBuilderTask::Priority::NORMAL, convertDef, pos, 0.f, true));
 				return task;
@@ -1201,6 +1273,11 @@ IBuilderTask* CEconomyManager::UpdateReclaimTasks(const AIFloat3& position, CCir
 	}
 
 	bool isResurrect = unit->GetCircuitDef()->IsAbleToResurrect();  // false;
+	// Past the 10-minute mark, wreckage is worth more as instant metal than as a slow rez -
+	// let rez-capable bots fall through to reclaiming instead of queuing more resurrections.
+	if (isResurrect && (circuit->GetLastFrame() >= FRAMES_PER_SEC * 60 * 10)) {
+		isResurrect = false;
+	}
 	if (IsMetalFull() || (builderMgr->GetTasks(IBuilderTask::BuildType::RECLAIM).size() >= builderMgr->GetWorkerCount() / 2)) {
 //		isResurrect = unit->GetCircuitDef()->IsAbleToResurrect();
 		if (!isResurrect) {
@@ -1290,7 +1367,8 @@ IBuilderTask* CEconomyManager::UpdateEnergyTasks(const AIFloat3& position, CCirc
 	}
 
 	// check energy / metal ratio
-	float metalIncome = GetAvgMetalIncome();
+	const float rawMetalIncome = GetAvgMetalIncome();
+	float metalIncome = rawMetalIncome;
 	float energyIncome = GetAvgEnergyIncome();
 	bool isEnergyStalling = IsEnergyStalling();
 	// TODO: e-stalling needs separate array of energy-defs sorted by cost
@@ -1332,6 +1410,12 @@ IBuilderTask* CEconomyManager::UpdateEnergyTasks(const AIFloat3& position, CCirc
 		const auto& engy = infos[i];
 		if (engy.data.isOld || !engy.cdef->IsAvailable(frame)
 			|| !terrainMgr->CanBeBuiltAtSafe(engy.cdef, position))
+		{
+			continue;
+		}
+		const std::string& defName = engy.cdef->GetDef()->GetName();
+		if ((IsFusionDef(defName) && ((rawMetalIncome < FUSION_UNLOCK_METAL) || (rawMetalIncome >= AFUS_UNLOCK_METAL)))
+			|| (IsAfusDef(defName) && (rawMetalIncome < AFUS_UNLOCK_METAL)))
 		{
 			continue;
 		}
@@ -1384,9 +1468,26 @@ IBuilderTask* CEconomyManager::UpdateEnergyTasks(const AIFloat3& position, CCirc
 	CSetupManager* setupMgr = circuit->GetSetupManager();
 	AIFloat3 buildPos = -RgtVector;
 	if (bestDef->IsAttrBase()) {
-		buildPos = (bestDef->GetCostM() < 1000.0f) ? setupMgr->GetEnergyBase() : setupMgr->GetEnergyBase2();
+		if (bestDef->GetCostM() < 1000.0f) {
+			buildPos = setupMgr->GetEnergyBase();
+		} else {
+			// Adv Fusion: anchor one grid-depth behind the con-turret (nano) stack that sits behind the main lab
+			CFactoryManager* factoryMgr = circuit->GetFactoryManager();
+			CCircuitUnit* mainFac = factoryMgr->GetClosestFactory(setupMgr->GetBasePos());
+			if (mainFac != nullptr) {
+				const AIFloat3 back = GetBackDir(mainFac->GetUnit()->GetBuildingFacing());
+				buildPos = mainFac->GetPos(circuit->GetLastFrame()) + back * ((NANO_GRID_ROWS + 1) * NANO_GRID_SPACING);
+			} else {
+				buildPos = setupMgr->GetEnergyBase2();
+			}
+		}
 		CCircuitDef* bdef = (unit == nullptr) ? bestDef : unit->GetCircuitDef();
 		buildPos = circuit->GetTerrainManager()->GetBuildPosition(bdef, buildPos);
+	} else if (bestDef->IsWind()) {
+		const int windIdx = bestDef->GetCount() + defCounts[bestDef->GetId()];
+		buildPos = GetGridPos(setupMgr->GetBasePos(), AIFloat3(1.f, 0.f, 0.f), AIFloat3(0.f, 0.f, 1.f),
+				windIdx, WIND_GRID_COLS, WIND_GRID_SPACING);
+		CTerrainManager::CorrectPosition(buildPos);
 	} else {
 		if (terrainMgr->IsZoneAlly(position)
 			|| ((circuit->GetFactoryManager()->GetFactoryCount() > 0) && (position.SqDistance2D(setupMgr->GetSmallEnergyPos()) < SQUARE(600.f))
@@ -1507,6 +1608,17 @@ IBuilderTask* CEconomyManager::UpdateFactoryTasks(const AIFloat3& position, CCir
 	}
 	CCircuitDef* facDef = factoryTask->GetBuildDef();
 	CCircuitDef* reprDef = factoryTask->GetReprDef();
+	if (IsT3LabDef(facDef->GetDef()->GetName()) && (GetAvgMetalIncome() < T3_LAB_UNLOCK_METAL)) {
+		return nullptr;
+	}
+	if (IsT2LabDef(facDef->GetDef()->GetName()) && (GetAvgMetalIncome() < T2_LAB_UNLOCK_METAL)) {
+		return nullptr;
+	}
+
+	// Force a T2+ lab at the 8-minute mark regardless of income, so the AI never gets stuck
+	// on T1 forever - bypasses the metal/energy affordability gates below (only) for this case.
+	const bool isForceT2Lab = !factoryMgr->IsT1Factory(facDef) && (factoryMgr->GetNoT1FacCount() <= 0)
+			&& (circuit->GetLastFrame() >= FRAMES_PER_SEC * 60 * 8);
 
 	/*
 	 * check metal and energy levels
@@ -1529,13 +1641,15 @@ IBuilderTask* CEconomyManager::UpdateFactoryTasks(const AIFloat3& position, CCir
 	const int nanoQueued = builderMgr->GetTasks(IBuilderTask::BuildType::NANO).size();
 	const float factoryPower = factoryMgr->GetMetalRequire() * factoryMgr->GetFacModM() + nanoQueued * factoryMgr->GetAssistSpeed();
 	const float energyPower = factoryMgr->GetEnergyRequire() * factoryMgr->GetFacModE() * GetEcoEM() + nanoQueued * factoryMgr->GetAssistSpeed();
-	if ((metalFactor < factoryPower) && !isSwitchTime && (isStart || (facDef->GetCostM() > GetMetalCur()))) {
-		return nullptr;
-	}
-	if ((engyFactor < energyPower) || IsEnergyStalling()) {
-		isEnergyRequired = true;  // enough metal, request energy
-		UpdateEnergyTasks(geom::is_valid(position) ? position : circuit->GetSetupManager()->GetBasePos(), unit);
-		return nullptr;
+	if (!isForceT2Lab) {
+		if ((metalFactor < factoryPower) && !isSwitchTime && (isStart || (facDef->GetCostM() > GetMetalCur()))) {
+			return nullptr;
+		}
+		if ((engyFactor < energyPower) || IsEnergyStalling()) {
+			isEnergyRequired = true;  // enough metal, request energy
+			UpdateEnergyTasks(geom::is_valid(position) ? position : circuit->GetSetupManager()->GetBasePos(), unit);
+			return nullptr;
+		}
 	}
 	if (!isStart && !circuit->IsSlave() && !factoryMgr->IsSwitchAllowed(facDef)) {
 		return nullptr;
@@ -2000,21 +2114,11 @@ bool CEconomyManager::CheckAssistRequired(const AIFloat3& position, CCircuitUnit
 		return true;
 	}
 
-	switch (factory->GetUnit()->GetBuildingFacing()) {
-		default:
-		case UNIT_FACING_SOUTH:
-			buildPos.z -= 64.0f;  // def->GetZSize() * SQUARE_SIZE * 2;
-			break;
-		case UNIT_FACING_EAST:
-			buildPos.x -= 64.0f;  // def->GetXSize() * SQUARE_SIZE * 2;
-			break;
-		case UNIT_FACING_NORTH:
-			buildPos.z += 64.0f;  // def->GetZSize() * SQUARE_SIZE * 2;
-			break;
-		case UNIT_FACING_WEST:
-			buildPos.x += 64.0f;  // def->GetXSize() * SQUARE_SIZE * 2;
-			break;
-	}
+	// Con-turrets fill a 4-wide x 16-deep grid behind the factory (never front/left/right)
+	const AIFloat3 back = GetBackDir(factory->GetUnit()->GetBuildingFacing());
+	const AIFloat3 right(-back.z, 0.f, back.x);
+	const int nanoIdx = (int)factoryMgr->GetNanoCount(factory) + nanoQueued;
+	buildPos = GetGridPos(buildPos, right, back, nanoIdx, NANO_GRID_COLS, NANO_GRID_SPACING, /*rowOffset*/1);
 	CTerrainManager::CorrectPosition(buildPos);
 	CCircuitDef* bdef = (unit == nullptr) ? facDef : unit->GetCircuitDef();
 	buildPos = terrainMgr->GetBuildPosition(bdef, buildPos);
@@ -2204,6 +2308,54 @@ void CEconomyManager::ReclaimOldEnergy(const SEnergyExt* energyExt)
 			}
 			circuit->GetBuilderManager()->Enqueue(TaskB::Reclaim(IUnitTask::Priority::HIGH, unit, FRAMES_PER_SEC * 1200));
 		}
+	}
+}
+
+// Unconditionally eats every lesser (non-BASE) energy plant map-wide once a Fusion/Adv Fusion finishes
+void CEconomyManager::ReclaimAllT1Energy()
+{
+	if (circuit->IsLoadSave()) {
+		return;
+	}
+	const AIFloat3& center = circuit->GetSetupManager()->GetBasePos();
+	auto ids = circuit->GetCallback()->GetFriendlyUnitIdsIn(center, 1e6f, false);
+	for (int id : ids) {
+		CCircuitUnit* unit = circuit->GetTeamUnit(id);
+		if (unit == nullptr) {
+			continue;
+		}
+		CCircuitDef* cdef = unit->GetCircuitDef();
+		if (cdef->IsAttrBase() || !energyDefs.IsAvail(cdef)) {
+			continue;
+		}
+		circuit->GetBuilderManager()->Enqueue(TaskB::Reclaim(IUnitTask::Priority::HIGH, unit, FRAMES_PER_SEC * 1200));
+	}
+}
+
+// User-requested hard cutoff: once 20 minutes pass, all own T1 energy plants (wind/solar/adv
+// solar) are queued for reclaim, regardless of current income - separate from the scored
+// ReclaimOldEnergy()/ReclaimAllT1Energy() paths above.
+void CEconomyManager::ForceReclaimT1EnergyAfter20Min()
+{
+	if (circuit->IsLoadSave() || (circuit->GetLastFrame() < FRAMES_PER_SEC * 60 * 20)) {
+		return;
+	}
+	static const std::unordered_set<std::string> t1EnergyDefs = {
+		"armwin", "corwin", "legwin",
+		"armsolar", "corsolar", "legsolar",
+		"armadvsol", "coradvsol", "legadvsol",
+	};
+	CBuilderManager* builderMgr = circuit->GetBuilderManager();
+	for (auto& kv : circuit->GetTeamUnits()) {
+		CCircuitUnit* unit = kv.second;
+		CCircuitDef* cdef = unit->GetCircuitDef();
+		if ((cdef == nullptr) || unit->GetUnit()->IsBeingBuilt()) {
+			continue;
+		}
+		if (t1EnergyDefs.find(cdef->GetDef()->GetName()) == t1EnergyDefs.end()) {
+			continue;
+		}
+		builderMgr->Enqueue(TaskB::Reclaim(IUnitTask::Priority::HIGH, unit, FRAMES_PER_SEC * 1200));
 	}
 }
 

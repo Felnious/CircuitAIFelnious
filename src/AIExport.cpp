@@ -12,6 +12,7 @@
 
 #include <stdexcept>
 #include <map>
+#include <cstdio>
 
 static std::map<int, circuit::CCircuitAI*> myAIs;
 static std::map<int, springai::OOAICallback*> myAICallbacks;
@@ -35,6 +36,11 @@ EXPORT(int) init(int skirmishAIId, const struct SSkirmishAICallback* innerCallba
 
 	int ret = ERROR_SHIFT + 1;
 
+	if (FILE* f = fopen("C:/Users/felni/circuit_debug.log", "a")) {
+		fprintf(f, "exported init() called: skirmishAIId=%d\n", skirmishAIId);
+		fclose(f);
+	}
+
 	try {
 		circuit::CProfiler::GetInstance().InitNames(skirmishAIId);
 
@@ -46,6 +52,11 @@ EXPORT(int) init(int skirmishAIId, const struct SSkirmishAICallback* innerCallba
 
 		ret = 0;
 	} CATCH_CPP_AI_EXCEPTION(ret);
+
+	if (FILE* f = fopen("C:/Users/felni/circuit_debug.log", "a")) {
+		fprintf(f, "exported init() returning: ret=%d\n", ret);
+		fclose(f);
+	}
 
 	return ret; // (ret != 0) => error
 }
@@ -75,6 +86,11 @@ EXPORT(int) release(int skirmishAIId) {
 EXPORT(int) handleEvent(int skirmishAIId, int topic, const void* data) {
 
 	int ret = ERROR_SHIFT + 1;
+
+	if (FILE* f = fopen("C:/Users/felni/circuit_debug.log", "a")) {
+		fprintf(f, "exported handleEvent() called: skirmishAIId=%d topic=%d\n", skirmishAIId, topic);
+		fclose(f);
+	}
 
 	try {
 		ret = myAIs[skirmishAIId]->HandleEvent(topic, data);

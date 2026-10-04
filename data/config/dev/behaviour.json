@@ -227,9 +227,11 @@
 
 	// Juno silos: launched at enemy radar/jammer/scout to counter-intel
 	"armjuno": {
+		"role": ["static"],
 		"attribute": ["juno"]
 	},
 	"corjuno": {
+		"role": ["static"],
 		"attribute": ["juno"]
 	},
 
@@ -1289,11 +1291,13 @@
 	},
 	"armfus" : {
 		"role": ["static"],
+		"attribute": ["base"],
 		"build_mod": 2000,
 		"cooldown": 3
 	},
 	"armafus" : {
 		"role": ["static"],
+		"attribute": ["base"],
 		"build_mod": 4000
 	},
 	"armuwfus" : {
@@ -1356,8 +1360,13 @@
 //	},
 	"corfus" : {
 		"role": ["static"],
+		"attribute": ["base"],
 		"build_mod": 4000,
 		"cooldown": 3
+	},
+	"corafus" : {
+		"role": ["static"],
+		"attribute": ["base"]
 	},
 	"coruwfus" : {
 		"role": ["static"],

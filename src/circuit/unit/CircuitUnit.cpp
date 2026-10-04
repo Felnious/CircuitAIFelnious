@@ -139,6 +139,26 @@ bool CCircuitUnit::IsMoveFailed(int frame)
 	return isStuck;
 }
 
+bool CCircuitUnit::CheckAreaStuck(int frame, float radius, int duration)
+{
+	const AIFloat3& curPos = GetPos(frame);
+	if ((areaAnchorFrame < 0) || (curPos.SqDistance2D(areaAnchorPos) > SQUARE(radius))) {
+		areaAnchorPos = curPos;
+		areaAnchorFrame = frame;
+		areaStuckFrame = -1;
+		return false;
+	}
+	if (frame - areaAnchorFrame < duration) {
+		return false;
+	}
+	// Re-fire periodically while still stuck, instead of only once
+	if ((areaStuckFrame >= 0) && (frame - areaStuckFrame < FRAMES_PER_SEC * 5)) {
+		return false;
+	}
+	areaStuckFrame = frame;
+	return true;
+}
+
 void CCircuitUnit::ForceUpdate(int frame)
 {
 	if (execFrame < 0) {

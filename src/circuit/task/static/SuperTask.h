@@ -14,6 +14,7 @@ namespace circuit {
 
 class CCircuitDef;
 class CEnemyInfo;
+class CEnemyManager;
 
 class CSuperTask final: public IFighterTask {
 public:
@@ -31,8 +32,13 @@ public:
 
 private:
 	void ExecuteAttack(CCircuitUnit* unit);
-	CEnemyInfo* FindJunoTarget(CCircuitUnit* unit, CCircuitDef* cdef, int frame);
-	CEnemyInfo* FindEmpTarget(CCircuitUnit* unit, CCircuitDef* cdef, int frame);
+	// Random target near the front; returns nullptr and fills outPos when no live target is visible
+	CEnemyInfo* FindJunoTarget(CCircuitUnit* unit, CCircuitDef* cdef, int frame, springai::AIFloat3& outPos);
+	// Highest-cost known group ("biggest metal clump"); returns nullptr and fills outPos otherwise.
+	// outMetal receives the total metal cost of the targeted group (0 if none).
+	CEnemyInfo* FindEmpTarget(CCircuitUnit* unit, CCircuitDef* cdef, int frame, springai::AIFloat3& outPos, float& outMetal);
+	// Cortron/Legperdition: Afus/Fusion reactors > Labs > other static structures > everything else
+	CEnemyInfo* FindPriorityEmpTarget(CCircuitUnit* unit, CCircuitDef* cdef, int frame, springai::AIFloat3& outPos);
 
 	int targetFrame;
 	springai::AIFloat3 targetPos;

@@ -327,6 +327,7 @@ private:
 	std::string sideName;
 	int telemetryUnitsBuilt = 0;
 	int telemetryUnitsLost = 0;
+	int telemetryNextFrame = 0;
 	bool telemetryLogged = false;
 	std::shared_ptr<IMainJob> mergeTask;
 

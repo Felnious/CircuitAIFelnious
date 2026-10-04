@@ -177,6 +177,7 @@ public:
 
 	springai::AIFloat3 GetClosestHaven(CCircuitUnit* unit) const;
 	springai::AIFloat3 GetClosestHaven(const springai::AIFloat3& position) const;
+	unsigned int GetNanoCount(CCircuitUnit* factory) const;
 
 	const SSideInfo& GetSideInfo() const;
 	const std::vector<SSideInfo>& GetSideInfos() const { return sideInfos; }
@@ -218,6 +219,7 @@ private:
 	IUnitTask* CreateAssistTask(CCircuitUnit* unit);
 
 	void Watchdog();
+	void ClearExits();
 
 	Handlers2 createdHandler;
 	Handlers1 finishedHandler;

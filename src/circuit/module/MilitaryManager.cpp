@@ -73,6 +73,11 @@ CMilitaryManager::~CMilitaryManager()
 
 void CMilitaryManager::InitHandlers()
 {
+	auto isJunoDef = [](const CCircuitDef& cdef) {
+		const std::string& name = cdef.GetDef()->GetName();
+		return (name == "armjuno") || (name == "corjuno") || (name == "legjuno");
+	};
+
 	/*
 	 * Attacker handlers
 	 */
@@ -171,6 +176,9 @@ void CMilitaryManager::InitHandlers()
 	 * Superweapon handlers
 	 */
 	auto superCreatedHandler = [this](CCircuitUnit* unit, CCircuitUnit* builder) {
+		if (unit->GetCircuitDef()->IsAttrJuno()) {
+			this->circuit->LOG("%s: superCreatedHandler", unit->GetCircuitDef()->GetDef()->GetName());
+		}
 		if (unit->GetTask() == nullptr) {
 			unit->SetManager(this);
 			nilTask->AssignTo(unit);
@@ -178,6 +186,9 @@ void CMilitaryManager::InitHandlers()
 		}
 	};
 	auto superFinishedHandler = [this](CCircuitUnit* unit) {
+		if (unit->GetCircuitDef()->IsAttrJuno()) {
+			this->circuit->LOG("%s: superFinishedHandler, isAttrStock=%d", unit->GetCircuitDef()->GetDef()->GetName(), unit->GetCircuitDef()->IsAttrStock());
+		}
 		if (unit->GetTask() == nullptr) {
 			unit->SetManager(this);
 			this->circuit->AddActionUnit(unit);
@@ -256,6 +267,12 @@ void CMilitaryManager::InitHandlers()
 		if (cdef.IsBuilder()) {
 			builders.push_back(&cdef);
 		}
+		if (isJunoDef(cdef)) {
+			cdef.AddRole(ROLE_TYPE(SUPER));
+			cdef.SetMainRole(ROLE_TYPE(SUPER));
+			cdef.AddAttribute(ATTR_TYPE(JUNO));
+			cdef.AddAttribute(ATTR_TYPE(STOCK));
+		}
 
 		CCircuitDef::Id unitDefId = cdef.GetId();
 		if (cdef.IsRoleComm()) {
@@ -285,7 +302,8 @@ void CMilitaryManager::InitHandlers()
 		} else {
 //			damagedHandler[unitDefId] = structDamagedHandler;
 			if (cdef.IsRoleSuper()) {
-				if (cdef.IsAttacker()) {
+				// Juno/EMP may have near-zero measured DPS (reveal/paralyze effect), still need to fire
+				if (cdef.IsAttacker() || cdef.IsAttrJuno() || cdef.IsAttrEmp()) {
 					createdHandler[unitDefId] = superCreatedHandler;
 					finishedHandler[unitDefId] = superFinishedHandler;
 					destroyedHandler[unitDefId] = superDestroyedHandler;

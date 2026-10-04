@@ -77,6 +77,12 @@ void CDGunAction::Update(CCircuitAI* circuit)
 		{
 			continue;
 		}
+		if (isRoleComm
+			&& ((edef->GetCostM() <= 1000.f)  // not worth risking the commander
+				|| (!edef->IsMobile() && edef->IsAttacker())))  // avoid static defenses
+		{
+			continue;
+		}
 
 		const AIFloat3& ePos = enemy->GetPos();
 		const float elevation = map->GetElevationAt(ePos.x, ePos.z);

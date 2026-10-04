@@ -6,6 +6,7 @@
  */
 
 #include "CircuitAI.h"
+#include <cstdio>
 #include "scheduler/Scheduler.h"
 #include "script/ScriptManager.h"
 #include "script/InitScript.h"
@@ -21,6 +22,7 @@
 #include "terrain/path/PathFinder.h"
 #include "task/PlayerTask.h"
 #include "unit/CircuitUnit.h"
+#include "unit/action/TravelAction.h"
 #include "unit/enemy/EnemyUnit.h"
 #include "util/GameAttribute.h"
 #include "util/Utils.h"
@@ -56,6 +58,8 @@
 //#include "WrappCurrentCommand.h"
 
 #include <fstream>
+#include <filesystem>
+#include <unordered_set>
 
 namespace circuit {
 
@@ -164,22 +168,36 @@ void CCircuitAI::LogTelemetry()
 	const float metalIncome = (economy != nullptr && metal != nullptr) ? economy->GetIncome(metal) : -1.f;
 	const float energyIncome = (economy != nullptr && energy != nullptr) ? economy->GetIncome(energy) : -1.f;
 	const int unitsAlive = static_cast<int>(teamUnits.size());
+	const std::string metric = utils::string_format(
+		"METRIC faction=%s metalIncome=%f energyIncome=%f unitsBuilt=%i unitsLost=%i unitsAlive=%i damageDealt=unavailable",
+		sideName.c_str(), metalIncome, energyIncome, telemetryUnitsBuilt, telemetryUnitsLost, unitsAlive);
+	LOG("%s", metric.c_str());
 
-	char telemetryPath[4096];
-	if (callback->GetDataDirs()->LocatePath(telemetryPath, sizeof(telemetryPath),
-			"telemetry/metrics.log", true, true, false, false))
-	{
-		std::ofstream telemetry(telemetryPath, std::ios::app);
-		if (telemetry.is_open()) {
-			telemetry << "METRIC faction=" << sideName
-				<< " metalIncome=" << metalIncome
-				<< " energyIncome=" << energyIncome
-				<< " unitsBuilt=" << telemetryUnitsBuilt
-				<< " unitsLost=" << telemetryUnitsLost
-				<< " unitsAlive=" << unitsAlive
-				<< " damageDealt=unavailable\n";
+	// AI-writable data dir and process CWD can both be wrong depending on
+	// how the engine was launched, so try every candidate and never let a
+	// filesystem failure escape this function (it runs inside game events).
+	auto writeTo = [&metric](const std::filesystem::path& dir) {
+		try {
+			std::error_code error;
+			std::filesystem::create_directories(dir, error);
+			std::ofstream file(dir / "telemetrydata.log", std::ios::app);
+			if (file.is_open()) {
+				file << metric << '\n';
+			}
+		} catch (...) {
 		}
+	};
+
+	try {
+		springai::DataDirs* dataDirs = callback->GetDataDirs();
+		const char* writableDir = (dataDirs != nullptr) ? dataDirs->GetWriteableDir() : nullptr;
+		if (writableDir != nullptr && writableDir[0] != '\0') {
+			writeTo(std::filesystem::path(writableDir));
+		}
+	} catch (...) {
 	}
+
+	writeTo(std::filesystem::current_path());
 }
 
 void CCircuitAI::NotifyResign()
@@ -577,6 +595,16 @@ void CCircuitAI::CheatPreload()
 
 int CCircuitAI::Init(int skirmishAIId, const struct SSkirmishAICallback* sAICallback)
 {
+	// Unconditional, dependency-free diagnostic: proves Init() actually ran, independent of LOG()/DataDirs.
+	// Two locations tried in case one path is blocked (e.g. AV/Controlled Folder Access on the profile root).
+	if (FILE* f = fopen("C:/Users/felni/circuit_debug.log", "a")) {
+		fprintf(f, "Init called: skirmishAIId=%d\n", skirmishAIId);
+		fclose(f);
+	}
+	if (FILE* f = fopen("circuit_debug_cwd.log", "a")) {
+		fprintf(f, "Init called: skirmishAIId=%d\n", skirmishAIId);
+		fclose(f);
+	}
 	LOG(version);
 	this->skirmishAIId = skirmishAIId;
 	callback->Init(sAICallback);
@@ -877,6 +905,10 @@ int CCircuitAI::Update(int frame)
 		// scheduler->RunJobEvery(CScheduler::GameJob(&CInitScript::Update, script), TEAM_SLOWUPDATE_RATE, skirmishAIId);
 		script->Update();
 	}
+	if (frame >= telemetryNextFrame) {
+		LogTelemetry();
+		telemetryNextFrame = frame + 60 * 30;
+	}
 	UpdateActions();
 
 #ifdef DEBUG_VIS
@@ -1176,6 +1208,102 @@ int CCircuitAI::UnitIdle(CCircuitUnit* unit)
 	return 0;  // signaling: OK
 }
 
+// Finds a nearby finished, non-critical ally structure that may be physically blocking the path
+static CCircuitUnit* FindBlockingStruct(CCircuitAI* circuit, CCircuitUnit* unit)
+{
+	const int frame = circuit->GetLastFrame();
+	const AIFloat3& pos = unit->GetPos(frame);
+	const auto& friendlies = circuit->GetCallback()->GetFriendlyUnitIdsIn(pos, SQUARE_SIZE * 24.f, false);
+
+	CCircuitUnit* blocker = nullptr;
+	float minSqDist = -1.f;
+	for (const int fId : friendlies) {
+		if (fId == unit->GetId()) {
+			continue;
+		}
+		CCircuitUnit* cand = circuit->GetTeamUnit(fId);
+		if (cand == nullptr) {
+			continue;
+		}
+		CCircuitDef* cdef = cand->GetCircuitDef();
+		// Never touch factories, defenses, mexes or unfinished construction
+		if ((cdef == nullptr) || cdef->IsMobile() || cdef->IsMex() || cdef->IsAttacker()
+			|| cdef->GetDef()->IsBuilder() || cand->GetUnit()->IsBeingBuilt())
+		{
+			continue;
+		}
+		const float sqDist = pos.SqDistance2D(cand->GetPos(frame));
+		if ((minSqDist < 0.f) || (sqDist < minSqDist)) {
+			minSqDist = sqDist;
+			blocker = cand;
+		}
+	}
+	return blocker;
+}
+
+#define AREA_STUCK_RADIUS	30.f
+#define AREA_STUCK_FRAMES	(FRAMES_PER_SEC * 30)
+
+// Only these def names are ever eaten to unstick a unit: LLT/LHT, T1 Wind/Solar/AdvSolar/Converters
+static const std::unordered_set<std::string> AREA_STUCK_TARGETS = {
+	"armllt", "corllt",                         // LLT
+	"leglht",                                   // LHT
+	"armwin", "corwin", "legwin",                // T1 Wind
+	"armsolar", "corsolar", "legsolar",          // T1 Solar
+	"armadvsol", "coradvsol", "legadvsol",       // T1 AdvSolar
+	"armmakr", "cormakr", "legeconv",            // T1 Converters
+};
+
+// Eats only the whitelisted T1 structures above to free a heavy unit stuck trying to reach the
+// front line (@see UpdateActions gating).
+static void ReclaimAreaStuckObstacles(CCircuitAI* circuit, CCircuitUnit* unit)
+{
+	const int frame = circuit->GetLastFrame();
+	const AIFloat3& pos = unit->GetPos(frame);
+	const auto& friendlies = circuit->GetCallback()->GetFriendlyUnitIdsIn(pos, SQUARE_SIZE * 32.f, false);
+
+	CBuilderManager* builderMgr = circuit->GetBuilderManager();
+	for (const int fId : friendlies) {
+		if (fId == unit->GetId()) {
+			continue;
+		}
+		CCircuitUnit* cand = circuit->GetTeamUnit(fId);
+		if (cand == nullptr) {
+			continue;
+		}
+		CCircuitDef* cdef = cand->GetCircuitDef();
+		if ((cdef == nullptr) || cdef->IsMobile() || cand->GetUnit()->IsBeingBuilt()) {
+			continue;
+		}
+		if (AREA_STUCK_TARGETS.find(cdef->GetDef()->GetName()) == AREA_STUCK_TARGETS.end()) {
+			continue;
+		}
+		builderMgr->Enqueue(TaskB::Reclaim(IBuilderTask::Priority::HIGH, cand));
+	}
+}
+
+// Vampire-flagged static assist turrets reclaim any reclaimable enemy that enters their build range
+static void VampireReclaimNearby(CCircuitAI* circuit, CCircuitUnit* unit)
+{
+	const int frame = circuit->GetLastFrame();
+	const AIFloat3& pos = unit->GetPos(frame);
+	const auto& enemyIds = circuit->GetCallback()->GetEnemyUnitIdsIn(pos, unit->GetCircuitDef()->GetBuildDistance());
+	for (const int eId : enemyIds) {
+		CEnemyInfo* enemy = circuit->GetEnemyInfo(eId);
+		if (enemy == nullptr) {
+			continue;
+		}
+		CCircuitDef* edef = enemy->GetCircuitDef();
+		if ((edef == nullptr) || !edef->IsReclaimable()) {
+			continue;
+		}
+		TRY_UNIT(circuit, unit,
+			unit->CmdReclaimEnemy(enemy, UNIT_CMD_OPTION, frame + FRAMES_PER_SEC * 60);
+		)
+		return;
+	}
+}
+
 int CCircuitAI::UnitMoveFailed(CCircuitUnit* unit)
 {
 	if (unit->IsStuck()) {
@@ -1188,7 +1316,12 @@ int CCircuitAI::UnitMoveFailed(CCircuitUnit* unit)
 			unit->CmdSetMoveState(CCircuitDef::MoveType::ROAM);
 		)
 //		Garbage(unit, "stuck");
-		GetBuilderManager()->Enqueue(TaskB::Reclaim(IBuilderTask::Priority::NORMAL, unit));
+		CCircuitUnit* blocker = FindBlockingStruct(this, unit);
+		if (blocker != nullptr) {
+			GetBuilderManager()->Enqueue(TaskB::Reclaim(IBuilderTask::Priority::HIGH, blocker));
+		} else {
+			GetBuilderManager()->Enqueue(TaskB::Reclaim(IBuilderTask::Priority::NORMAL, unit));
+		}
 	} else if (unit->GetTask()->GetType() != IUnitTask::Type::NIL) {
 		unit->GetTask()->OnUnitMoveFailed(unit);
 	}
@@ -1720,6 +1853,23 @@ void CCircuitAI::UpdateActions()
 		} else {
 			if (unit->GetTask()->GetType() != IUnitTask::Type::PLAYER) {
 				unit->Update(this);
+				// Only heavy (T3-ish) units actively failing to travel to the front line count as "stuck";
+				// stationary builders/guards/etc. must never trigger the mass-reclaim.
+				if (unit->GetCircuitDef()->IsMobile() && unit->GetCircuitDef()->IsRoleHeavy()
+					&& (unit->GetTask()->GetType() == IUnitTask::Type::FIGHTER)
+					&& (unit->GetTravelAct() != nullptr) && !unit->GetTravelAct()->IsFinished())
+				{
+					if (unit->CheckAreaStuck(lastFrame, AREA_STUCK_RADIUS, AREA_STUCK_FRAMES)) {
+						ReclaimAreaStuckObstacles(this, unit);
+					}
+				} else {
+					unit->ResetAreaStuck();
+				}
+				if (!unit->GetCircuitDef()->IsMobile() && unit->GetCircuitDef()->IsAssist()
+					&& unit->GetCircuitDef()->IsAttrVampire())
+				{
+					VampireReclaimNearby(this, unit);
+				}
 				--n;
 			}
 			++actionIterator;

@@ -100,6 +100,9 @@ public:
 
 	bool IsMoveFailed(int frame);
 	bool IsStuck() const { return isStuck; }
+	// True (repeatedly, every few seconds) while the unit hasn't left a <radius> circle for <duration> frames
+	bool CheckAreaStuck(int frame, float radius, int duration);
+	void ResetAreaStuck() { areaAnchorFrame = -1; areaStuckFrame = -1; }
 
 	void ForceUpdate(int frame);
 	bool IsForceUpdate(int frame);
@@ -216,6 +219,10 @@ private:
 	int execFrame;  // TODO: Replace by CExecuteAction?
 	int disarmFrame;
 	int ammoFrame;
+
+	springai::AIFloat3 areaAnchorPos;
+	int areaAnchorFrame = -1;
+	int areaStuckFrame = -1;  // last frame the area-stuck event fired; -1 = never
 
 	float priority;
 

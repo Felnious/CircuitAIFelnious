@@ -11,11 +11,43 @@
 #include "CircuitAI.h"
 #include "util/Utils.h"
 
+#include "spring/SpringCallback.h"
+
 #include "AISCommands.h"
 
 namespace circuit {
 
 using namespace springai;
+
+// Nearby static assist turrets (nanotowers) pitch in on a reclaim within their own build range
+static void AssistNanosInRange(CCircuitAI* circuit, CCircuitUnit* unit, const AIFloat3& pos, float radius, CCircuitUnit* target)
+{
+	const int frame = circuit->GetLastFrame();
+	const auto& friendlies = circuit->GetCallback()->GetFriendlyUnitIdsIn(pos, radius + 400.f, false);
+	for (const int fId : friendlies) {
+		if (fId == unit->GetId()) {
+			continue;
+		}
+		CCircuitUnit* nano = circuit->GetTeamUnit(fId);
+		if (nano == nullptr) {
+			continue;
+		}
+		CCircuitDef* cdef = nano->GetCircuitDef();
+		if ((cdef == nullptr) || cdef->IsMobile() || !cdef->IsAssist()) {
+			continue;
+		}
+		if (pos.SqDistance2D(nano->GetPos(frame)) > SQUARE(cdef->GetBuildDistance() + radius)) {
+			continue;
+		}
+		TRY_UNIT(circuit, nano,
+			if (target != nullptr) {
+				nano->CmdReclaimUnit(target, UNIT_CMD_OPTION, frame + FRAMES_PER_SEC * 60);
+			} else {
+				nano->CmdReclaimInArea(pos, radius, UNIT_COMMAND_OPTION_CONTROL_KEY, frame + FRAMES_PER_SEC * 60);
+			}
+		)
+	}
+}
 
 IReclaimTask::IReclaimTask(ITaskModule* mgr, Priority priority, Type type,
 						   const AIFloat3& position,
@@ -82,6 +114,7 @@ bool IReclaimTask::Execute(CCircuitUnit* unit)
 		TRY_UNIT(circuit, unit,
 			unit->CmdReclaimUnit(target, UNIT_CMD_OPTION, frame + FRAMES_PER_SEC * 60);
 		)
+		AssistNanosInRange(circuit, unit, target->GetPos(frame), 0.f, target);
 		return true;
 	}
 
@@ -98,6 +131,7 @@ bool IReclaimTask::Execute(CCircuitUnit* unit)
 		// NOTE: CONTROL_KEY enables special mode that ignores autoreclaimable value
 		unit->CmdReclaimInArea(pos, reclRadius, UNIT_COMMAND_OPTION_CONTROL_KEY, frame + FRAMES_PER_SEC * 60);
 	)
+	AssistNanosInRange(circuit, unit, pos, reclRadius, nullptr);
 	return true;
 }
 
